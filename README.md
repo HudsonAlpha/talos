@@ -7,7 +7,7 @@ with configuration & annotated data stored at `/cluster/lab/gcooper/hg38/talos/`
 Changes to nextflow code here will take effect. Changes to python code (e.g. filtering & annotation logic) will need to be re-built into the singularity image `/cluster/lab/gcooper/hg38/talos/images/talos-build_7.5.2.sif`,
 which is then specified in the config files in the talos-deploy repository. 
 
-Specific instructions to run in in repository [HudsonAlpha/talos-deploy](https://github.com/HudsonAlpha/talos-deploy). 
+Specific instructions to run in in repository [HudsonAlpha/talos-deploy](https://github.com/HudsonAlpha/talos-deploy). Note: config files in this repo are the templates from upstream
 
 
 Readme from the forked repo follows
