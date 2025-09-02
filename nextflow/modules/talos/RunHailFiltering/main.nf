@@ -1,4 +1,6 @@
 process RunHailFiltering {
+    memory '256 GB'
+    cpus 8
     container params.container
 
     // runs the hail small-variant filtering

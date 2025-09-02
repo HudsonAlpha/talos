@@ -1,3 +1,15 @@
+work/
+clinvarbitration_data/
+large_files/
+*.log
+.nextflow.log.*
+.nextflow/
+nextflow/dnascope2_outputs/
+nextflow/test_1/
+nextflow/test_1_outputs/
+nextflow/test_2/
+nextflow/test_3_input/
+
 # Python codebase default gitignore (github template)
 
 # hail logs
