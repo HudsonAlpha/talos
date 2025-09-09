@@ -1,8 +1,9 @@
 process RunHailFiltering {
-    memory '256 GB'
-    cpus 8
+    memory '512 GB'
+    cpus 64
     container params.container
 
+    
     // runs the hail small-variant filtering
     publishDir params.output_dir, mode: 'copy'
 
@@ -20,6 +21,11 @@ process RunHailFiltering {
 
     // untar the ClinvArbitration data directory. Happy to keep doing this, it's much easier to distribute tar'd
     """
+       export SPARK_DRIVER_MEMORY='400g'
+       export SPARK_LOCAL_DIRS='/scratch/lab/gcooper/spark/'
+       export SPARK_SERIALIZER='org.apache.spark.serializer.KryoSerializer'
+       export SPARK_SQL_SHUFFLE_PARTITIONS='2000'
+
     export TALOS_CONFIG=${talos_config}
 
     tar --no-same-owner -zxf ${clinvar}
