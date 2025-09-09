@@ -13,15 +13,14 @@ Read, filter, annotate, classify, and write Genetic data
 
 from argparse import ArgumentParser
 
-import hail as hl
-from cloudpathlib.anypath import to_anypath
 from loguru import logger
-from peds import open_ped
+
+import hail as hl
 
 from talos.config import config_retrieve
 from talos.models import PanelApp
+from talos.pedigree_parser import PedigreeParser
 from talos.utils import read_json_from_path
-
 
 # set some Hail constants
 MISSING_INT = hl.int32(0)
@@ -119,7 +118,7 @@ def annotate_clinvarbitration(mt: hl.MatrixTable, clinvar: str) -> hl.MatrixTabl
                 ONE_INT,
                 MISSING_INT,
             ),
-            categoryboolean1=hl.if_else(
+            categorybooleanclinvarplp=hl.if_else(
                 (mt.info.clinvar_significance == PATHOGENIC) & (mt.info.clinvar_stars > 0),
                 ONE_INT,
                 MISSING_INT,
@@ -425,7 +424,7 @@ def split_rows_by_gene_and_filter_to_green(mt: hl.MatrixTable, green_genes: hl.S
     )
 
 
-def annotate_category_6(mt: hl.MatrixTable) -> hl.MatrixTable:
+def annotate_category_alphamissense(mt: hl.MatrixTable) -> hl.MatrixTable:
     """
     applies the boolean Category6 flag
     - AlphaMissense likely Pathogenic on at least one transcript
@@ -441,12 +440,12 @@ def annotate_category_6(mt: hl.MatrixTable) -> hl.MatrixTable:
     Args:
         mt (hl.MatrixTable):
     Returns:
-        same variants, categoryboolean6 set to 1 or 0
+        same variants, categorybooleanalphamissense set to 1 or 0
     """
 
     return mt.annotate_rows(
         info=mt.info.annotate(
-            categoryboolean6=hl.if_else(
+            categorybooleanalphamissense=hl.if_else(
                 hl.len(mt.transcript_consequences.filter(lambda x: x.am_class == 'likely_pathogenic')) > 0,
                 ONE_INT,
                 MISSING_INT,
@@ -455,7 +454,7 @@ def annotate_category_6(mt: hl.MatrixTable) -> hl.MatrixTable:
     )
 
 
-def annotate_category_3(mt: hl.MatrixTable) -> hl.MatrixTable:
+def annotate_category_high_impact(mt: hl.MatrixTable) -> hl.MatrixTable:
     """
     applies the boolean Category3 flag
     - Critical protein consequence on at least one transcript
@@ -464,7 +463,7 @@ def annotate_category_3(mt: hl.MatrixTable) -> hl.MatrixTable:
         mt (hl.MatrixTable):
 
     Returns:
-        same variants, categoryboolean3 set to 1 or 0
+        same variants, categorybooleanhighimpact set to 1 or 0
     """
 
     critical_consequences = hl.set(config_retrieve(['RunHailFiltering', 'critical_csq'], CRITICAL_CSQ_DEFAULT))
@@ -472,7 +471,7 @@ def annotate_category_3(mt: hl.MatrixTable) -> hl.MatrixTable:
     # First check if we have any HIGH consequences
     return mt.annotate_rows(
         info=mt.info.annotate(
-            categoryboolean3=hl.if_else(
+            categorybooleanhighimpact=hl.if_else(
                 (
                     hl.len(
                         mt.transcript_consequences.filter(
@@ -517,22 +516,11 @@ def filter_by_consequence(mt: hl.MatrixTable) -> hl.MatrixTable:
     )
 
 
-def get_affected_from_pedigree(ped_file_path: str) -> hl.SetExpression:
-    """Pull out a set of affected members from the pedigree."""
-    set_of_affected_ids: set[str] = set()
-    with to_anypath(ped_file_path).open(encoding='utf-8') as handle:
-        for line in handle:
-            if not line.rstrip() or line.startswith('#'):
-                continue
-            parts = line.rstrip().split()
-            if len(parts) != NUM_PED_COLS:
-                continue
-            if parts[5] == '2':  # affected
-                set_of_affected_ids.add(parts[1])  # sample ID is the second column
-    return hl.literal(set_of_affected_ids)
-
-
-def annotate_category_4(mt: hl.MatrixTable, ped_file_path: str) -> hl.MatrixTable:
+def annotate_category_de_novo(
+    mt: hl.MatrixTable,
+    pedigree_data: PedigreeParser,
+    strict_ad: bool = False,
+) -> hl.MatrixTable:
     """
     Category based on de novo MOI, restricted to a group of consequences
     The Hail builtin method has limitations around Hemizygous regions
@@ -552,40 +540,47 @@ def annotate_category_4(mt: hl.MatrixTable, ped_file_path: str) -> hl.MatrixTabl
     """
 
     # modifiable through config
-    min_child_ab: float = config_retrieve(['de_novo', 'min_child_ab'], 0.20)
-    min_depth: int = config_retrieve(['de_novo', 'min_depth'], 5)
-    max_depth: int = config_retrieve(['de_novo', 'max_depth'], 1000)
-    min_proband_gq: int = config_retrieve(['de_novo', 'min_proband_gq'], 25)
-    min_alt_depth = config_retrieve(['de_novo', 'min_alt_depth'], 5)
+    min_child_ab: float = config_retrieve(['RunHailFiltering', 'de_novo', 'min_child_ab'], 0.20)
+    min_depth: int = config_retrieve(['RunHailFiltering', 'de_novo', 'min_depth'], 5)
+    max_depth: int = config_retrieve(['RunHailFiltering', 'de_novo', 'max_depth'], 1000)
+    min_proband_gq: int = config_retrieve(['RunHailFiltering', 'de_novo', 'min_proband_gq'], 25)
+    min_alt_depth = config_retrieve(['RunHailFiltering', 'de_novo', 'min_alt_depth'], 5)
 
     # this GQ filter will be applied to all samples, not just probands
     # if the dataset is merged from single-sample VCFs, WT samples for a given allele will have no GQ, so this filter
     # will remove all of those samples, removing our ability to detect de novo events in the corresponding families
-    min_all_sample_gq: int = config_retrieve(['de_novo', 'min_all_sample_gq'], None)
+    min_all_sample_gq: int = config_retrieve(['RunHailFiltering', 'de_novo', 'min_all_sample_gq'], None)
 
     logger.info('Running de novo search')
 
     de_novo_matrix = filter_by_consequence(mt)
 
-    pedigree = hl.Pedigree.read(ped_file_path)
+    # if we use the strict AD filter, we will remove all samples without exactly 2 AD values
+    if strict_ad:
+        de_novo_matrix = de_novo_matrix.filter_entries(hl.len(de_novo_matrix.AD) == 2)
+
+    # takes the parsed pedigree data, writes it to a temporary file as a Strict 6-column format
+    temp_ped_path = 'temp.ped'
+    pedigree_data.write_pedigree(output_path=temp_ped_path)
+    pedigree = hl.Pedigree.read(temp_ped_path)
 
     # allow for depth to be missing, rebuild from other attributes if required, or use a default
     if 'DP' in de_novo_matrix.entry:
-        depth = de_novo_matrix.DP
+        pass
     elif 'AD' in de_novo_matrix.entry:
-        depth = hl.sum(de_novo_matrix.AD)
+        de_novo_matrix = de_novo_matrix.annotate_entries(DP=hl.sum(de_novo_matrix.AD))
     else:
+        de_novo_matrix = de_novo_matrix.annotate_entries(DP=min_depth + 1)
         logger.info('DP and AD both absent, chucking in a default value')
         logger.info('Input variant data should really have either DP or AD present for various QC purposes')
-        depth = min_depth + 1
 
     # pull out affected members from the pedigree, Hail does not process the phenotype column
-    affected_members = get_affected_from_pedigree(ped_file_path)
+    affected_members = hl.literal(pedigree_data.get_affected_member_ids())
 
     de_novo_matrix = de_novo_matrix.filter_entries(
-        (min_depth > depth)
-        | (max_depth < depth)
-        | (de_novo_matrix.GT.is_het()) & (de_novo_matrix.AD[1] < (min_child_ab * depth))
+        (min_depth > de_novo_matrix.DP)
+        | (max_depth < de_novo_matrix.DP)
+        | (de_novo_matrix.GT.is_het()) & (de_novo_matrix.AD[1] < (min_child_ab * de_novo_matrix.DP))
         # these tests are aimed exclusively at affected participants
         | ((affected_members.contains(de_novo_matrix.s)) & (min_proband_gq >= de_novo_matrix.GQ)),
         keep=False,
@@ -660,7 +655,7 @@ def annotate_category_4(mt: hl.MatrixTable, ped_file_path: str) -> hl.MatrixTabl
 
     # annotate those values as a flag if relevant, else 'missing'
     return mt.annotate_rows(
-        info=mt.info.annotate(categorysample4=hl.or_else(dn_table[mt.row_key].dn_ids, MISSING_STRING)),
+        info=mt.info.annotate(categorysampledenovo=hl.or_else(dn_table[mt.row_key].dn_ids, MISSING_STRING)),
     )
 
 
@@ -709,10 +704,10 @@ def filter_to_categorised(mt: hl.MatrixTable) -> hl.MatrixTable:
     """
 
     return mt.filter_rows(
-        (mt.info.categoryboolean1 == 1)
-        | (mt.info.categoryboolean6 == 1)
-        | (mt.info.categoryboolean3 == 1)
-        | (mt.info.categorysample4 != MISSING_STRING)
+        (mt.info.categorybooleanclinvarplp == 1)
+        | (mt.info.categorybooleanalphamissense == 1)
+        | (mt.info.categorybooleanhighimpact == 1)
+        | (mt.info.categorysampledenovo != MISSING_STRING)
         | (mt.info.categorydetailspm5 != MISSING_STRING)
         | (mt.info.categorybooleansvdb == 1)
         | (mt.info.categorydetailsexomiser != MISSING_STRING),
@@ -756,28 +751,13 @@ def green_from_panelapp(panel_data: PanelApp) -> hl.SetExpression:
     """
 
     # take all the green genes, remove the metadata
-    green_genes = set(panel_data.genes.keys())
+    green_genes = set(panel_data.genes)
     logger.info(f'Extracted {len(green_genes)} green genes')
     return hl.literal(green_genes)
 
 
-def subselect_mt_to_pedigree(mt: hl.MatrixTable, pedigree: str) -> hl.MatrixTable:
-    """
-    remove any columns from the MT which are not represented in the Pedigree
-    _not_ done: remove variants without calls amongst the current samples
-    that's probably more processing than benefit - will be skipped later
-
-    Args:
-        mt ():
-        pedigree ():
-    Returns:
-        MatrixTable, possibly with fewer columns (samples) present
-    """
-
-    # individual IDs from pedigree
-    ped_samples: set[str] = set()
-    for family in open_ped(pedigree):
-        ped_samples.update({member.id for member in family})
+def subselect_mt_to_pedigree(mt: hl.MatrixTable, ped_samples: set[str]) -> hl.MatrixTable:
+    """Remove any columns from the MT which are not represented in the Pedigree."""
 
     # individual IDs from matrix
     matrix_samples = set(mt.s.collect())
@@ -825,6 +805,29 @@ def generate_a_checkpoint(mt: hl.MatrixTable, checkpoint_path: str) -> hl.Matrix
     return mt
 
 
+def pad_homref_ad(mt: hl.MatrixTable):
+    """
+    Observed in some callsets, the AD genotype/format field contains only a single value for HomRef calls.
+    This detects those values, and adds a second value of 0, to enable AD-based filtering later in the pipeline.
+    """
+
+    def pad_ad(ad) -> hl.ArrayExpression:
+        return hl.if_else(
+            (hl.len(ad) == 1) & (ad[0] > 0),
+            ad.append(0),
+            ad,
+        )
+
+    logger.info('Padding AD field for HomRef calls where only a single value is present')
+    mt = mt.annotate_entries(
+        AD=hl.if_else(
+            mt.GT.is_hom_ref(),
+            pad_ad(mt.AD),
+            mt.AD,
+        ),
+    )
+
+
 def cli_main():
     """
     Read MT, filter, and apply category annotation, export as a VCF
@@ -854,7 +857,7 @@ def cli_main():
     )
 
 
-def main(
+def main(  # noqa: PLR0915
     mt_path: str,
     panel_data: str,
     pedigree: str,
@@ -894,10 +897,12 @@ def main(
     # read the parsed panelapp data
     logger.info(f'Reading PanelApp data from {panel_data!r}')
     panelapp = read_json_from_path(panel_data, return_model=PanelApp)
-    assert isinstance(panelapp, PanelApp)
 
     # pull green genes from the panelapp data
     green_expression = green_from_panelapp(panelapp)
+
+    # read the pedigree data
+    pedigree_data: PedigreeParser = PedigreeParser(pedigree)
 
     # read the matrix table from a localised directory
     mt = hl.read_matrix_table(mt_path)
@@ -910,6 +915,9 @@ def main(
         mt.alleles.contains('*'),
         keep=False,
     )
+
+    if config_retrieve(['RunHailFiltering', 'pad_homref_ad'], False):
+        pad_homref_ad(mt)
 
     # insert AC/AN/AF if missing
     mt = populate_callset_frequencies(mt)
@@ -930,7 +938,7 @@ def main(
     mt = filter_to_population_rare(mt=mt)
 
     # subset to currently considered samples
-    mt = subselect_mt_to_pedigree(mt, pedigree=pedigree)
+    mt = subselect_mt_to_pedigree(mt, ped_samples=pedigree_data.get_all_sample_ids())
 
     # remove any rows which have no genes of interest
     mt = remove_variants_outside_gene_roi(mt=mt, green_genes=green_expression)
@@ -967,14 +975,38 @@ def main(
     # 1 was applied earlier during the integration of clinvar data
     # for cat. 4, pre-filter the variants by tx-consequential or C5==1
     logger.info('Applying categories')
-    mt = annotate_category_6(mt=mt)
-    mt = annotate_category_3(mt=mt)
+    mt = annotate_category_alphamissense(mt=mt)
+    mt = annotate_category_high_impact(mt=mt)
 
     # insert easy ignore of de novo filtering based on config, to overcome some data format issues
-    if any(to_ignore in ignored_categories for to_ignore in ['de_novo', 'denovo', '4']):
-        mt.annotate_rows(info=mt.info.annotate(categorysample4=MISSING_STRING))
+    if any(to_ignore in ignored_categories for to_ignore in ['de_novo', 'denovo', '4']) or config_retrieve(
+        'singletons',
+        False,
+    ):
+        logger.info('Skipping de novo annotation, category 4 will not be used during this analysis')
+        mt = mt.annotate_rows(info=mt.info.annotate(categorysampledenovo=MISSING_STRING))
     else:
-        mt = annotate_category_4(mt=mt, ped_file_path=pedigree)
+        try:
+            # try the standard approach first
+            mt = annotate_category_de_novo(mt=mt, pedigree_data=pedigree_data)
+
+        # catch a known error caused by AD fields with a single value
+        except hl.utils.java.HailUserError as e:
+            logger.error(f'Failed to run de novo annotation, skipping category 4. Error was: {e}')
+
+            # attempt to interpret the error, and re-run with strict AD filtering if it matches
+            if 'HailException: array index out of bounds: index=1, length=1' in str(e):
+                logger.error(
+                    'This error has previously been caused by a variant caller assigning only a single value in the AD '
+                    'field for Het calls, where Talos expects two entries; [Ref, Alt].'
+                    'If this applies to your dataset, try setting the config option "RunHailFiltering.pad_homref_ad" '
+                    'to true, which will add a second value of 0 to all 1-len HomRef AD fields. This will not solve '
+                    'situations where the AD field is missing or malformed for Het or Hom calls.'
+                    'Talos will re-attempt de novo variant detection, filtering to entries with exactly 2 AD values.',
+                )
+                mt = annotate_category_de_novo(mt=mt, pedigree_data=pedigree_data, strict_ad=True)
+            else:
+                mt = mt.annotate_rows(info=mt.info.annotate(categorysampledenovo=MISSING_STRING))
 
     # if a clinvar-codon table is supplied, use that for PM5
     mt = annotate_codon_clinvar(mt=mt, pm5_path=pm5)

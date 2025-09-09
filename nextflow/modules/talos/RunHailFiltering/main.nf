@@ -1,6 +1,8 @@
 process RunHailFiltering {
     memory '512 GB'
     cpus 64
+    memory '256 GB'
+    cpus 8
     container params.container
 
     
@@ -13,6 +15,7 @@ process RunHailFiltering {
         path pedigree
         path clinvar
         path talos_config
+        path check_file
 
     output:
         tuple \

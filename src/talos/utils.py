@@ -5,39 +5,34 @@ HTTPX requests are backoff-wrapped using tenacity
 https://tenacity.readthedocs.io/en/latest/
 """
 
-import httpx
 import json
 import re
+import statistics
 import string
 import zoneinfo
 from collections import defaultdict
 from datetime import datetime
-from itertools import chain, combinations_with_replacement, islice
+from itertools import chain, combinations, combinations_with_replacement, islice
 from random import choices
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+import httpx
 from cloudpathlib.anypath import to_anypath
 from loguru import logger
-from peds import open_ped
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter, retry_if_exception_type
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 from talos.config import config_retrieve
 from talos.models import (
     VARIANT_MODELS,
-    CategoryMeta,
     Coordinates,
-    HistoricSampleVariant,
-    HistoricVariants,
-    PanelApp,
-    Pedigree,
-    PedigreeMember,
     ResultData,
     SmallVariant,
     StructuralVariant,
     lift_up_model_version,
+    translate_category,
 )
+from talos.pedigree_parser import PedigreeParser
 from talos.static_values import get_granular_date
-
 
 if TYPE_CHECKING:
     import cyvcf2
@@ -76,12 +71,13 @@ DOI_URL = 'https://doi.org/'
 # don't fail, just suggest that someone raises an issue on github, but only print this message once
 PHASE_BROKEN: bool = False
 
+# not in use yet, if we want to reduce the number of TranscriptConsequence entries we store, this is a good start
+BORING_CONSEQUENCES = ['downstream_gene_variant', 'intron_variant', 'upstream_gene_variant']
+
 
 def parse_mane_json_to_dict(mane_json: str) -> dict:
     """
     Read the MANE JSON and filter it to the relevant fields
-    Args:
-        mane_json ():
 
     Returns:
         a dictionary of {Symbol: ID}
@@ -95,57 +91,11 @@ def parse_mane_json_to_dict(mane_json: str) -> dict:
 def get_random_string(length: int = 6) -> str:
     """
     get a random string of a pre-determined leng`th
-    Args:
-        length ():
 
     Returns:
         A random string comprised of upper-case letters and numbers
     """
     return ''.join(choices(string.ascii_uppercase + string.digits, k=length))
-
-
-def make_flexible_pedigree(pedigree: str, panelapp: PanelApp | None = None) -> Pedigree:
-    """
-    takes the representation offered by peds and reshapes it to be searchable
-    this is really just one short step from writing my own implementation...
-
-    Args:
-        pedigree (str): path to a pedigree file
-        panelapp (PanelApp): a PanelApp object
-
-    Returns:
-        a searchable representation of the ped file
-    """
-    if panelapp is None:
-        panelapp = PanelApp()
-
-    new_ped = Pedigree()
-    ped_data = open_ped(pedigree)
-    for family in ped_data:
-        for member in family:
-            me = PedigreeMember(
-                family=member.family,
-                id=member.id,
-                mother=MEMBER_LOOKUP_DICT.get(member.mom, member.mom),
-                father=MEMBER_LOOKUP_DICT.get(member.dad, member.dad),
-                sex=member.sex,
-                affected=member.phenotype,
-            )
-
-            # populate this info if we have it from the GeneratePanelData step/output
-            if pheno_participant := panelapp.participants.get(member.id):
-                me.ext_id = pheno_participant.external_id
-                me.hpo_terms = pheno_participant.hpo_terms
-
-            # add as a member
-            new_ped.members.append(me)
-
-            # add to a lookup
-            new_ped.by_id[me.id] = me
-
-            # add to a list of members in this family
-            new_ped.by_family.setdefault(me.family, []).append(me)
-    return new_ped
 
 
 def chunks(iterable, chunk_size):
@@ -480,7 +430,9 @@ def create_small_variant(
     )
 
     # optionally - ignore some categories from this analysis
-    ignored_categories = config_retrieve(['ValidateMOI', 'ignore_categories'], [])
+    # keep it super flexible, lower case and a translated version
+    ignored_categories = {word.lower() for word in config_retrieve(['ValidateMOI', 'ignore_categories'], [])}
+    ignored_categories.update({translate_category(x) for x in ignored_categories})
 
     # set the class attributes - skipping over categories we've chosen to ignore
     boolean_categories = [
@@ -495,7 +447,8 @@ def create_small_variant(
     ]
 
     # the categories to be treated as support-only for this runtime - make it a set
-    support_categories = set(config_retrieve(['ValidateMOI', 'support_categories'], []))
+    support_categories = {word.lower() for word in config_retrieve(['ValidateMOI', 'support_categories'], [])}
+    support_categories.update({translate_category(x) for x in support_categories})
 
     # overwrite with true booleans
     for cat in boolean_categories:
@@ -509,6 +462,11 @@ def create_small_variant(
             info[sam_cat] = info[sam_cat]
         elif isinstance(info[sam_cat], set):
             info[sam_cat] = list(info[sam_cat])
+
+    # check that there's at least one category left after the PM5/Exomiser/SVDB/other processing, else return None
+    # this isn't a sample-specific check, just a check that there's anything left worth classifying on
+    if not (any(info[cat] for cat in boolean_categories) or any(info[cat] for cat in sample_categories)):
+        return None
 
     phased = get_phase_data(samples, var)
 
@@ -608,8 +566,8 @@ def canonical_contigs_from_vcf(reader) -> set[str]:
 
 def gather_gene_dict_from_contig(
     contig: str,
-    variant_source,
-    sv_sources: list | None = None,
+    variant_source: 'cyvcf2.VCFReader',
+    sv_source: 'cyvcf2.VCFReader | None' = None,
 ) -> GeneDict:
     """
     takes a cyvcf2.VCFReader instance, and a specified chromosome
@@ -620,7 +578,7 @@ def gather_gene_dict_from_contig(
     Args:
         contig (): contig name from VCF header
         variant_source (): the VCF reader instance
-        sv_sources (): an optional list of SV VCFs
+        sv_source (): an optional list of SV VCFs
 
     Returns:
         A lookup in the form
@@ -630,8 +588,7 @@ def gather_gene_dict_from_contig(
             ...
         }
     """
-    if sv_sources is None:
-        sv_sources = []
+
     if bl_file := config_retrieve(['GeneratePanelData', 'blacklist'], ''):
         blacklist = read_json_from_path(bl_file, default=[])
     else:
@@ -662,7 +619,8 @@ def gather_gene_dict_from_contig(
         # update the gene index dictionary
         contig_dict[small_variant.info.get('gene_id')].append(small_variant)
 
-    for sv_source in sv_sources:
+    # parse the SV VCF if provided, but not a necessary part of processing
+    if sv_source:
         structural_variants = 0
         for variant in sv_source(contig):
             # create an abstract SV variant
@@ -718,15 +676,8 @@ def read_json_from_path(read_path: str | None = None, default: Any = None, retur
 
 def get_non_ref_samples(variant: 'cyvcf2.Variant', samples: list[str]) -> tuple[set[str], set[str]]:
     """
-    for this variant, find all samples with a call
-    cyvcf2 uses 0,1,2,3==HOM_REF, HET, UNKNOWN, HOM_ALT
-
-    Args:
-        variant (cyvcf2.Variant):
-        samples (list[str]):
-
-    Returns:
-        2 sets of strings; het and hom
+    For this variant, find all samples with a call. cyvcf2 uses 0,1,2,3==HOM_REF, HET, UNKNOWN, HOM_ALT.
+    Returns 2 sets of strings; het sample ID, hom sample IDs
     """
     het_samples = set()
     hom_samples = set()
@@ -744,12 +695,7 @@ def get_non_ref_samples(variant: 'cyvcf2.Variant', samples: list[str]) -> tuple[
 
 
 def extract_csq(csq_contents: str) -> list[dict]:
-    """
-    handle extraction of the CSQ entries based on string in config
-
-    Args:
-        csq_contents ():
-    """
+    """Handle extraction of the CSQ entries based on string in config."""
 
     # allow for no CSQ data, i.e. splice variant
     if not csq_contents:
@@ -759,29 +705,26 @@ def extract_csq(csq_contents: str) -> list[dict]:
     csq_categories = config_retrieve(['RunHailFiltering', 'csq_string'])
 
     # iterate over all consequences, and make each into a dict
-    txc_dict = [dict(zip(csq_categories, each_csq.split('|'), strict=True)) for each_csq in csq_contents.split(',')]
+    txc_dicts = [dict(zip(csq_categories, each_csq.split('|'), strict=True)) for each_csq in csq_contents.split(',')]
 
     # update this String to be either a float, or missing
-    for each_dict in txc_dict:
+    for each_dict in txc_dicts:
         am_path = each_dict.get('am_pathogenicity')
         each_dict['am_pathogenicity'] = float(am_path) if am_path else ''
 
-    return txc_dict
+    return txc_dicts
 
 
-def find_comp_hets(var_list: list[VARIANT_MODELS], pedigree: Pedigree) -> CompHetDict:
+def find_comp_hets(var_list: list[VARIANT_MODELS], pedigree: PedigreeParser) -> CompHetDict:
     """
-    manual implementation to find compound hets
-    variants provided in the format
+    Find compound het pairs, variants provided in the format [var1, var2, ...]
 
-    [var1, var2, ..]
-
-    generate pair content in the form
-    {sample: {var_as_string: [partner_variant, ...]}}
-
-    Args:
-        var_list (list[VARIANT_MODELS]): all variants in this gene
-        pedigree (): Pedigree
+    generates pair content in the form
+    {
+        sample: {
+            var_as_string: [partner_variant, ...],
+        }
+    }
     """
 
     # create an empty dictionary
@@ -799,7 +742,7 @@ def find_comp_hets(var_list: list[VARIANT_MODELS], pedigree: Pedigree) -> CompHe
             phased = False
 
             # don't assess male compound hets on sex chromosomes
-            if pedigree.by_id[sample].sex == '1' and var_1.coordinates.chrom in X_CHROMOSOME:
+            if pedigree.participants[sample].sex == 1 and var_1.coordinates.chrom in X_CHROMOSOME:
                 continue
 
             # check for both variants being in the same phase set
@@ -815,109 +758,7 @@ def find_comp_hets(var_list: list[VARIANT_MODELS], pedigree: Pedigree) -> CompHe
     return comp_het_results
 
 
-def generate_fresh_latest_results(current_results: ResultData):
-    """
-    This will be called if a cohort has no latest results, but has
-    indicated a place to save them.
-    Args:
-        current_results (ResultData): results from this current run
-    """
-
-    new_history = HistoricVariants(metadata=CategoryMeta(categories=config_retrieve('categories', {})))
-    for sample, content in current_results.results.items():
-        for var in content.variants:
-            # bank the number of clinvar stars, if any
-            if '1' in var.categories:
-                clinvar_stars = var.var_data.info.get('clinvar_stars')
-                assert isinstance(clinvar_stars, int)
-            else:
-                clinvar_stars = None
-
-            new_history.results.setdefault(sample, {})[var.var_data.coordinates.string_format] = HistoricSampleVariant(
-                categories=dict.fromkeys(var.categories, var.first_tagged),
-                support_vars=var.support_vars,
-                independent=var.independent,
-                first_tagged=var.first_tagged,  # this could be min of available values, but this is first analysis
-                clinvar_stars=clinvar_stars,
-            )
-    save_new_historic(results=new_history)
-
-
-def phenotype_label_history(results: ResultData):
-    """
-    Annotation in-place of the results object
-    Either pull the 'date of phenotype match' from the historic data, or add 'today' to the historic data
-
-    Args:
-        results (ResultData):
-    """
-    # are there any history results?
-    if (historic_folder := config_retrieve('result_history', None)) is None:
-        logger.info('No historic data folder, no labelling')
-        return
-
-    latest_results_path = find_latest_file(results_folder=historic_folder)
-    logger.info(f'latest results: {latest_results_path}')
-
-    # get latest results as a HistoricVariants object, or fail - on fail, return
-    if (latest_results := read_json_from_path(latest_results_path, return_model=HistoricVariants)) is None:
-        # this HPO-flagging stage shouldn't make its own historic data
-        logger.info(f"Historic data {latest_results_path} doesn't really exist, quitting")
-        return
-
-    for sample, content in results.results.items():
-        # get the historical record for this sample
-        sample_historic = latest_results.results.get(sample, {})
-        # check each variant found in this round
-        for var in content.variants:
-            var_id = var.var_data.coordinates.string_format
-            if hist := sample_historic.get(var_id):
-                # update the date of the first phenotype match, or add it into the history
-                if hist.first_phenotype_tagged:
-                    var.date_of_phenotype_match = hist.first_phenotype_tagged
-                else:
-                    hist.first_phenotype_tagged = get_granular_date()
-
-                # update all the phenotype labels - we might identify incremental phenotype matches in future
-                hist.phenotype_labels.update(var.phenotype_labels)
-            else:
-                # totally new variant, probably not possible, but tolerate here anyway
-                # reasoning: we're always running this after MOI checking, so we shouldn't
-                # have completely new variants between there and here
-                sample_historic.results.setdefault(sample, {})[var_id] = HistoricSampleVariant(
-                    categories={cat: get_granular_date() for cat in var.categories},
-                    support_vars=var.support_vars,
-                    independent=var.independent,
-                    first_tagged=get_granular_date(),
-                    clinvar_stars=var.var_data.info.get('clinvar_stars'),
-                    phenotype_labels=var.phenotype_labels,
-                    first_phenotype_tagged=get_granular_date(),
-                )
-
-    save_new_historic(results=latest_results)
-
-
-def save_new_historic(results: HistoricVariants):
-    """
-    save the new results in the historic results dir
-
-    Args:
-        results (HistoricVariants): object to save as JSON
-    """
-
-    if (directory := config_retrieve('result_history', None)) is None:
-        logger.info('No historic data folder, no saving')
-        return
-
-    # we're using cloud paths here
-    new_file = to_anypath(directory) / f'{TODAY}.json'
-    with new_file.open('w') as handle:
-        handle.write(results.model_dump_json(indent=4))
-
-    logger.info(f'Wrote new data to {new_file}')
-
-
-def annotate_variant_dates_using_prior_results(results: ResultData):
+def annotate_variant_dates_using_prior_results(results: ResultData, previous_results: ResultData | None = None):
     """
     loads the most recent prior result set (if it exists)
     annotates previously seen variants with the most recent date seen
@@ -925,148 +766,119 @@ def annotate_variant_dates_using_prior_results(results: ResultData):
 
     Args:
         results (ResultData): the results produced during this run
+        previous_results (ResultData | None): optional, results of a previous analysis to build on
 
-    Returns: same results annotated with date-first-seen
+    Returns:
+        None, but if previous results are provided, updates the results in place
+
     """
 
-    if (_historic_folder := config_retrieve('result_history', None)) is None:
-        logger.info('No historic data folder, no filtering')
-        # update all the evidence_last_updated
-        for content in results.results.values():
-            for var in content.variants:
-                var.evidence_last_updated = get_granular_date()
+    if previous_results is None:
+        logger.info('No previous results provided, saving with current dates only')
         return
 
-    # If there;s a historic data folder, find the most recent entry in it
-    latest_results_path = find_latest_file(results_folder=config_retrieve('result_history', None))
+    # for every sample-variant in both datasets, check for new categories, and adjust all dates accordingly
+    # bonus behaviour, if a prev. variant is not present in the current results, insert with found_in_current_run=False
+    for sample, content in results.results.items():
+        # this variant was absent from previous analysis, or was newly added in this run
+        if sample not in previous_results.results:
+            continue
 
-    logger.info(f'latest results: {latest_results_path}')
+        # collect variant list into a dict for easy lookup
+        new_vars = {var.var_data.coordinates.string_format: var for var in content.variants}
 
-    # get latest results as a HistoricVariants object, or fail - on fail, return
-    if latest_results := read_json_from_path(latest_results_path, return_model=HistoricVariants):
-        # this is just to please the type checker
-        assert isinstance(latest_results, HistoricVariants)
+        # scroll over all the variants found in the previous run
+        for old_var in previous_results.results[sample].variants:
+            old_coord = old_var.var_data.coordinates.string_format
+            # we didn't recover this variant in the current run - insert it into new results, marking as not found
+            if old_coord not in new_vars:
+                old_var.found_in_current_run = False
+                old_var.clinvar_increase = False
+                content.variants.append(old_var)
+                continue
 
-        date_annotate_results(results, latest_results)
-        save_new_historic(results=latest_results)
-    else:
-        # generate and write some new latest data
-        generate_fresh_latest_results(current_results=results)
-
-
-def date_from_string(string: str) -> str:
-    """
-    takes a string, finds the date. Simples
-    Args:
-        string (a filename):
-
-    Returns:
-        the String YYYY-MM-DD
-    """
-    date_search = re.search(DATE_RE, string)
-    if date_search:
-        return date_search.group()
-    raise ValueError(f'No date found in {string}')
-
-
-def find_latest_file(results_folder: str, ext: str = 'json') -> str | None:
-    """
-    takes a directory of files, and finds the latest
-    Args:
-        results_folder (): local or remote folder, or don't call this method
-        ext (): the type of files we're looking for
-
-    Returns: most recent file path, or None
-    """
-
-    logger.info(f'Using results from {results_folder}')
-
-    # this is currently a CloudPath to access globbing for files in cloud or local settings
-    date_files = {date_from_string(filename.name): filename for filename in to_anypath(results_folder).glob(f'*.{ext}')}
-    if not date_files:
-        return None
-
-    return str(date_files[max(date_files.keys())].absolute())
-
-
-def date_annotate_results(current: ResultData, historic: HistoricVariants):
-    """
-    takes the current data, and annotates with previous dates if found
-    build/update the historic data within the same loop
-
-    logically we can't reach this method in production without historic
-    data being present. This method no longer permits historic data to be
-    missing, and edits objects in place
-
-    first_seen date is the earliest date of any category assignment
-    this date should be static
-
-    Args:
-        current (ResultData): results generated during this run
-        historic (HistoricVariants): optionally, historic data
-
-    Returns:
-        updated/instantiated cumulative data
-    """
-
-    # update to latest category descriptions
-    historic.metadata.categories.update(config_retrieve('categories'))
-
-    for sample, content in current.results.items():
-        # get the historical record for this sample
-        sample_historic = historic.results.get(sample, {})
-
-        # check each variant found in this round
-        for var in content.variants:
-            # get the number of clinvar stars, if appropriate
-            if '1' in var.categories:
-                clinvar_stars = var.var_data.info.get('clinvar_stars')
-                assert isinstance(clinvar_stars, int)
-            else:
-                clinvar_stars = None
-
-            var_id = var.var_data.coordinates.string_format
-            current_cats = var.categories
-
-            # this variant was previously seen
-            if hist := sample_historic.get(var_id):
-                # bool if this was ever independent (i.e. dominant or Homozygous)
-                # changed logic - do not update dates of prior category assignments
-                if var.independent and not hist.independent:
-                    hist.independent = True
-
-                # if we have any new categories don't alter the date
-                if new_cats := current_cats - set(hist.categories):
-                    # add any new categories
-                    for cat in new_cats:
-                        hist.categories[cat] = get_granular_date()
-
-                # update to include all support_variants
-                # support vars is comp-het partners, different from support-level category importance
-                hist.support_vars.update(var.support_vars)
-
-                # mark the first seen timestamp
-                var.first_tagged = hist.first_tagged
-
-                # log an increase in ClinVar star rating
-                if clinvar_stars:
-                    historic_stars = hist.clinvar_stars
-
-                    # if clinvar_stars was previously None, or was previously lower, store and keep a boolean
-                    # then update the history for this variant to flag that the star rating has increased
-                    if (historic_stars is None) or clinvar_stars > historic_stars:
-                        var.clinvar_increase = True
-                        hist.clinvar_stars = clinvar_stars
-
-                # latest _new_ category date as evidence_last_changed timestamp
-                var.evidence_last_updated = sorted(hist.categories.values(), reverse=True)[0]
-
-            # totally new variant
-            else:
-                historic.results.setdefault(sample, {})[var_id] = HistoricSampleVariant(
-                    categories={cat: get_granular_date() for cat in current_cats},
-                    support_vars=var.support_vars,
-                    independent=var.independent,
-                    first_tagged=get_granular_date(),
-                    clinvar_stars=clinvar_stars,
+            # we found this variant again, but do we have any new categories to add?
+            new_var = new_vars[old_coord]
+            if new_var.clinvar_stars:
+                new_var.clinvar_increase = bool(
+                    old_var.clinvar_stars is None or new_var.clinvar_stars > old_var.clinvar_stars,
                 )
+
+            for cat, date in old_var.categories.items():
+                new_var.categories[translate_category(cat)] = date
+
+            # collect all the dates we have for first category assignment
+            category_dates = list(new_var.categories.values())
+
+            # we previously had a phenotype match date, carry it forward
+            if old_pheno := old_var.date_of_phenotype_match:
+                new_var.date_of_phenotype_match = old_pheno
+                category_dates.append(old_pheno)
+
+            # new supporting comp-het partners = new evidence change date
+            if new_var.support_vars - old_var.support_vars:
+                category_dates.append(get_granular_date())
+            new_var.support_vars.update(old_var.support_vars)
+
+            new_var.evidence_last_updated = max(category_dates)
+            new_var.first_tagged = min(new_var.categories.values())
+
+
+def generate_summary_stats(result_set: ResultData):
+    """Reads over the variants present in the result set, and generates some per-sample and per-cohort stats."""
+
+    # make this naive, i.e. not configured specifically based on a list of Categories in configuration
+    category_count: dict[str, list[int]] = defaultdict(list)
+
+    for sample_results in result_set.results.values():
+        if len(sample_results.variants) == 0:
+            continue
+
+        sample_variants: dict[str, set[str]] = defaultdict(set)
+
+        # iterate over all identified variants
+        for each_var in sample_results.variants:
+            var_string = each_var.var_data.coordinates.string_format
+
+            # catch all comp-het pairs as a single variant - we are electing to count comp-het events as a single
+            # variant, so we have to adjust our counting for this
+            # do this by identifying all sorted pairwise combinations, sorting them, creating a single String for each,
+            # and counting each unique String once
+            if sups := each_var.support_vars:
+                var_strings = [' '.join(sorted(combo)) for combo in combinations([var_string, *sups], 2)]
+
+            # if the variant is dominant or Hom, count it once - list of length 1
+            else:
+                var_strings = [var_string]
+
+            for unique_var in var_strings:
+                # populate the 'any's
+                sample_variants['any'].add(unique_var)
+
+                # find all categories associated with this variant. For each category, add to corresponding list and set
+                for category_value in each_var.categories:
+                    sample_variants[category_value].add(unique_var)
+
+        # record that these were the variants seen for this sample,
+        for key, set_of_strings in sample_variants.items():
+            category_count[key].append(len(set_of_strings))
+
+    # update the counts-per-sample dictionary
+    number_of_samples = len(result_set.results)
+
+    stats_count: dict[str, dict[str, int | float]] = {}
+    for category_type, count_list in category_count.items():
+        # pad the observed counts to the number of samples under consideration
+        count_list.extend([0] * (number_of_samples - len(count_list)))
+
+        stats_count[category_type] = {
+            'total': sum(count_list),
+            'mean': sum(count_list) / number_of_samples,
+            'min': min(count_list),
+            'max': max(count_list),
+            'median': statistics.median(count_list),
+            'mode': statistics.mode(count_list) if len(count_list) > 0 else 0,
+            'stddev': statistics.stdev(count_list) if len(count_list) > 1 else 0.0,
+        }
+
+    result_set.metadata.variant_breakdown = stats_count

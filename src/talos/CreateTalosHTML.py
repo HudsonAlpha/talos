@@ -19,6 +19,7 @@ from typing import Any
 
 import jinja2
 import pandas as pd
+from cloudpathlib.anypath import to_anypath
 from loguru import logger
 
 from talos.config import config_retrieve
@@ -42,20 +43,55 @@ GNOMAD_POP = config_retrieve(['RunHailFilteringSv', 'gnomad_population'], 'gnoma
 GNOMAD_SV_KEY = f'{GNOMAD_POP}_sv_svid'
 
 
-def known_date_prefix_check(all_results: ResultData) -> list[str]:
+def parse_ids_from_file(ext_id_file: str | None) -> dict[str, str] | None:
     """
-    Check for known date prefixes in the results
-
-    Args:
-        all_results (): the whole summary dataset
-
-    Returns:
-        a list of all found prefixes, or empty list
+    Reads a file containing external IDs and returns a dictionary mapping
+    this can be headerless TSV, CSV, in which case the two columns are Sample ID (in VCF/MT) and an external ID
+    If provided in JSON format, this must be a dictionary of Sample ID -> External ID
     """
+
+    # escape if there was nothing provided, or the file doesn't exist
+    if ext_id_file is None:
+        return None
+    if not to_anypath(ext_id_file).exists():
+        logger.warning(f'External ID file {ext_id_file} does not exist or was not accessible, skipping')
+        return None
+
+    id_mapping: dict[str, str] = {}
+
+    file_as_path = to_anypath(ext_id_file)
+    if (suffix := file_as_path.suffix) == '.json':
+        # read the JSON file as a dictionary
+        id_mapping = read_json_from_path(ext_id_file)
+        if not isinstance(id_mapping, dict):
+            raise ValueError(f'Expected a dictionary in {ext_id_file}, got {type(id_mapping)}')
+
+    elif suffix in ['.tsv', '.csv']:
+        delimiter = ',' if suffix == '.csv' else '\t'
+        with file_as_path.open(encoding='utf-8') as handle:
+            for line in handle:
+                # skip empty lines
+                if not line.strip():
+                    continue
+                # split the line into two parts
+                parts = line.strip().split(delimiter)
+                if len(parts) != 2:
+                    raise ValueError(f'Expected two columns in {ext_id_file}, got {len(parts)}')
+                sample_id, ext_id = parts
+                id_mapping[sample_id] = ext_id
+
+    else:
+        raise ValueError(f'Unsupported file format: {ext_id_file} - expected JSON, TSV or CSV, with correct extension.')
+
+    return id_mapping
+
+
+def known_date_prefix_check(all_results: ResultData, external_id_map: dict[str, str]) -> list[str]:
+    """Check for known date prefixes in the results. This acts on the external IDs, and fits a CPG use-case."""
 
     known_prefixes: dict[str, int] = defaultdict(int)
-    for content in all_results.results.values():
-        if match := KNOWN_YEAR_PREFIX.match(content.metadata.ext_id):
+    for sample_id in all_results.results:
+        if sample_id in external_id_map and (match := KNOWN_YEAR_PREFIX.match(external_id_map[sample_id])):
             known_prefixes[match.group()[0:2]] += 1
         else:
             logger.info('There is no consistent sample ID prefix')
@@ -65,27 +101,27 @@ def known_date_prefix_check(all_results: ResultData) -> list[str]:
     return sorted(known_prefixes.keys())
 
 
-def split_data_into_sub_reports(all_results: ResultData) -> list[tuple[ResultData, str, str]]:
+def split_data_into_sub_reports(
+    all_results: ResultData,
+    external_id_map: dict[str, str],
+) -> list[tuple[ResultData, str, str]]:
     """
     Split the data into sub-reports, only if there's a common prefix (e.g. by year)
     Return a list of the ResultData subsets, output base path, and a subset identifier
-
-    Args:
-        all_results ():
 
     Returns:
         tuple: a list of tuples, each containing a ResultData object, the output base path, and a subset identifier
     """
     return_results: list[tuple[ResultData, str, str]] = []
 
-    if prefixes := known_date_prefix_check(all_results):
+    if prefixes := known_date_prefix_check(all_results, external_id_map=external_id_map):
         for prefix in prefixes:
             this_rd = ResultData(
                 metadata=all_results.metadata,
                 results={
                     sample: content
                     for sample, content in all_results.results.items()
-                    if content.metadata.ext_id.startswith(prefix)
+                    if external_id_map.get(sample, sample).startswith(prefix)
                 },
                 version=all_results.version,
             )
@@ -137,6 +173,8 @@ class HTMLBuilder:
         panelapp_path: str,
         subset_id: str | None = None,
         link_engine: 'LinkEngine | None' = None,
+        ext_id_map: dict[str, str] | None = None,
+        ext_labels: dict | None = None,
     ):
         """
         Args:
@@ -144,13 +182,21 @@ class HTMLBuilder:
             panelapp_path (str): where to read panelapp data from
             subset_id (str, optional): the subset ID to use for this report
             link_engine (LinkEngine, optional): the link engine to generate hyperlinks with
+            ext_id_map (dict[str, str], optional): a mapping of sample IDs to external IDs, optional
+            ext_labels (dict | None): a nested dictionary of sample IDs, variant identifiers, and labels, or None
         """
+
+        if ext_id_map is None:
+            logger.info('No External IDs were provided, using Sample names as IDs')
+
+        self.ext_id_map = ext_id_map or {}
+
         # ID to use if this is a subset report
         self.subset_id = subset_id
 
         # get a hold of the base panel ID we're using
         # this is used to differentiate between new in base and new in other
-        self.base_panel: int = config_retrieve(['GeneratePanelData', 'default_panel'], 137)
+        self.base_panel: int = config_retrieve(['GeneratePanelData', 'default_panel'])
 
         self.panelapp: PanelApp = read_json_from_path(panelapp_path, return_model=PanelApp)
 
@@ -172,8 +218,7 @@ class HTMLBuilder:
         #         "1-123457-A-T": ["label1"]
         #     },
         # }
-        self.ext_labels: dict[str, dict] = config_retrieve(['CreateTalosHTML', 'external_labels'], {})
-        assert isinstance(self.ext_labels, dict)
+        self.ext_labels = ext_labels or {}
 
         self.metadata = results_dict.metadata
         self.panel_names = {panel.name for panel in self.metadata.panels.values()}
@@ -318,6 +363,16 @@ class HTMLBuilder:
         # we ignore that here, and catch it in the outer scope
         # (summary_table, zero_cat_samples, unused_ext_labels) = self.get_summary_stats()
 
+        # if these attributes are in the config we'll end up with a more descriptive report title
+        dataset = config_retrieve('dataset', None)
+        seq_type = config_retrieve('sequencing_type', None)
+        if 'long_read' in config_retrieve([]):
+            long_read = 'long_read' if config_retrieve('long_read') else 'short-read'
+        else:
+            long_read = None
+
+        extra_detail = ', '.join(x for x in [dataset, seq_type, long_read] if x)
+
         template_context = {
             # 'metadata': self.metadata,
             'index_path': f'../{Path(output_filepath).name}',
@@ -328,7 +383,7 @@ class HTMLBuilder:
             # 'zero_categorised_samples': zero_cat_samples,
             # 'unused_ext_labels': unused_ext_labels,
             # 'summary_table': None,
-            'report_title': 'Full Talos Report',
+            'report_title': f'Full Talos Report: {extra_detail}',
             # 'solved': self.solved,
             'type': 'whole_cohort',
         }
@@ -390,8 +445,13 @@ class Sample:
         self.family_id = metadata.family_id
         self.family_members = metadata.members
         self.phenotypes = metadata.phenotypes
-        self.ext_id = metadata.ext_id
+        self.ext_id = html_builder.ext_id_map.get(name, name)
         self.panel_details = metadata.panel_details
+        self.family_display: dict[str, str] = {}
+
+        for member_id in metadata.members:
+            report_ext = f'({ext_labels[member_id]})' if member_id in ext_labels else ''
+            self.family_display[member_id] = f'{member_id} {report_ext}'
 
         # create a url link out to the sample-level data
         if html_builder.link_engine:
@@ -434,21 +494,18 @@ class LinkEngine:
         Args:
             template (str): mandatory - without this there's no sense generating an instance
             variant_template (str): optional, if there's a string here, we'll try and generate variant-specific links
-            external (bool): if True, embed/lookup external IDs in the lookup dictionary. Default is sample.name
-            lookup (dict): optional, a path to a JSON dictionary. Can be used to connect sample ID -> arbitrary ID
+            external (bool): if True, embed/lookup external IDs in the lookup dictionary. Default is sample.name.
+                             This is mostly for a CPG internal use-case, where the seqr lookup and external lookup come
+                             from different sources. The Lookup variable makes this redundant.
+            lookup (dict): optional, a path to a CSV/TSV/JSON file, used to connect sample ID -> arbitrary ID
         """
         self.template = template
         self.variant_template = variant_template
         self.external = external
-        if lookup:
-            self.lookup = read_json_from_path(lookup)
-        else:
-            self.lookup = None
+        self.lookup = parse_ids_from_file(lookup)
 
     def get_string_id(self, sample: Sample) -> str | None:
-        """
-        Get the string ID for the sample to use in links
-        """
+        """Get the string ID for the sample to use in links."""
 
         key = sample.ext_id if self.external else sample.name
 
@@ -462,15 +519,7 @@ class LinkEngine:
         return key
 
     def generate_sample_link(self, sample: Sample):
-        """
-        generates a sample/family level link using the template
-
-        Args:
-            sample ():
-
-        Returns:
-            string, with sample component embedded
-        """
+        """Generates a sample/family level link using the template."""
 
         string_id = self.get_string_id(sample)
 
@@ -482,16 +531,7 @@ class LinkEngine:
         return self.template.format(sample=string_id)
 
     def generate_variant_link(self, sample: Sample, var_string: str) -> str | None:
-        """
-        generates a Sample & Variant level link using the template
-
-        Args:
-            sample ():
-            var_string (str):
-
-        Returns:
-            string, with sample component embedded
-        """
+        """Generate a Sample & Variant level link using the template."""
 
         if not self.variant_template:
             return None
@@ -669,31 +709,64 @@ def cli_main():
     parser.add_argument('--input', help='Path to analysis results', required=True)
     parser.add_argument('--panelapp', help='PanelApp data', required=True)
     parser.add_argument('--output', help='Final HTML filename', required=True)
+    parser.add_argument('--ext_ids', help='Optional, Mapping file for external IDs', default=None)
+    parser.add_argument('--seqr_ids', help='Optional, Mapping file for Seqr IDs', default=None)
+    parser.add_argument('--labels', help='Dict, SampleID: VariantID: [labels], optional', default=None)
     args = parser.parse_args()
-    main(results=args.input, panelapp=args.panelapp, output=args.output)
+    main(
+        results=args.input,
+        panelapp=args.panelapp,
+        output=args.output,
+        ext_id_file=args.ext_ids,
+        seqr_id_file=args.seqr_ids,
+        external_labels=args.labels,
+    )
 
 
-def main(results: str, panelapp: str, output: str):
+def main(
+    results: str,
+    panelapp: str,
+    output: str,
+    ext_id_file: str | None = None,
+    seqr_id_file: str | None = None,
+    external_labels: str | None = None,
+):
     """
 
     Args:
         results (str): path to the MOI-tested results file
         panelapp (str): path to the panelapp data
         output (str): where to write the HTML file
+        ext_id_file (str | None): optional, path to a file containing external IDs
+        seqr_id_file (str | None): optional, path to a file containing Seqr IDs
+        external_labels (str | None): optional, path to a file containing external labels
     """
 
     report_output_dir = Path(output).parent
 
     results_object = read_json_from_path(results, return_model=ResultData)
 
+    # can be None if absent, or is a lookup of sample ID in VCF ~ an external ID
+    external_id_map = parse_ids_from_file(ext_id_file)
+
+    labels_file: dict[str, dict] = read_json_from_path(external_labels, {})
+
     # set up the link builder, or None
-    if link_section := config_retrieve(['CreateTalosHTML', 'hyperlinks'], None):
-        link_builder = LinkEngine(**link_section)
+    if (link_section := config_retrieve(['CreateTalosHTML', 'hyperlinks'], None)) and seqr_id_file:
+        link_builder = LinkEngine(**link_section, lookup=seqr_id_file)
+    elif link_section:
+        link_builder = LinkEngine(**link_section, lookup=None)
     else:
         link_builder = None
 
     # we always make this main page - we need a reliable output path to generate analysis entries [CPG]
-    html = HTMLBuilder(results_dict=results_object, panelapp_path=panelapp, link_engine=link_builder)
+    html = HTMLBuilder(
+        results_dict=results_object,
+        panelapp_path=panelapp,
+        link_engine=link_builder,
+        ext_id_map=external_id_map,
+        ext_labels=labels_file,
+    )
 
     # if this fails with a NoVariantsFoundException, there were no variants to present in the whole cohort
     # catch this, but fail gracefully so that the process overall is a success
@@ -705,9 +778,19 @@ def main(results: str, panelapp: str, output: str):
     except NoVariantsFoundError:
         logger.warning('No Categorised variants found in this whole cohort')
 
+    if external_id_map is None or config_retrieve(['CreateTalosHTML', 'split_reports'], False) is False:
+        return
+
     # we only need to do sub-reports if we can delineate by year
-    for data, report, prefix in split_data_into_sub_reports(results_object):
-        html = HTMLBuilder(results_dict=data, panelapp_path=panelapp, subset_id=prefix, link_engine=link_builder)
+    for data, report, prefix in split_data_into_sub_reports(results_object, external_id_map):
+        html = HTMLBuilder(
+            results_dict=data,
+            panelapp_path=panelapp,
+            subset_id=prefix,
+            link_engine=link_builder,
+            ext_id_map=external_id_map,
+            ext_labels=labels_file,
+        )
         try:
             output_filepath = join(report_output_dir, report)
             logger.debug(f'Attempting to create {report} at {output_filepath}')

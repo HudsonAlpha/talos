@@ -7,11 +7,12 @@ from os.path import join
 from pathlib import Path
 from typing import Any
 
-import hail as hl
 import pytest
+from _pytest.logging import LogCaptureFixture
 from cyvcf2 import VCFReader
 from loguru import logger
-from _pytest.logging import LogCaptureFixture
+
+import hail as hl
 
 from talos.data_model import BaseFields, Entry, SneakyTable, TXFields, VepVariant
 from talos.utils import create_small_variant, read_json_from_path
@@ -84,6 +85,50 @@ def fixture_make_a_mt(tmp_path_factory) -> hl.MatrixTable:
     sample_gt = Entry('0/1')
     sample_data = {'SAMPLE': sample_gt}
     sample_schema = {'SAMPLE': sample_gt.get_schema_entry()}
+    v = VepVariant(
+        BaseFields('chr1:12345', alleles=['A', 'G']),
+        [TXFields('a', 'ensga')],
+        sample_data=sample_data,
+    )
+    return SneakyTable([v], sample_details=sample_schema, tmp_path=str(tmp_path)).to_hail()
+
+
+@pytest.fixture(name='make_a_de_novo_mt', scope='session')
+def fixture_make_a_dn_mt(tmp_path_factory) -> hl.MatrixTable:
+    """
+    a fixture to make a matrix table
+    """
+    tmp_path = tmp_path_factory.mktemp('dn_mt_goes_here')
+    sample_gt = Entry('0/1')
+    parent_gt = Entry('0/0', ad=[30, 0], gq=40)
+    sample_data = {'male': sample_gt, 'mother_1': parent_gt, 'father_1': parent_gt}
+    sample_schema = {
+        'male': sample_gt.get_schema_entry(),
+        'mother_1': parent_gt.get_schema_entry(),
+        'father_1': parent_gt.get_schema_entry(),
+    }
+    v = VepVariant(
+        BaseFields('chr1:12345', alleles=['A', 'G']),
+        [TXFields('a', 'ensga')],
+        sample_data=sample_data,
+    )
+    return SneakyTable([v], sample_details=sample_schema, tmp_path=str(tmp_path)).to_hail()
+
+
+@pytest.fixture(name='make_a_bch_de_novo_mt', scope='session')
+def fixture_make_a_bch_dn_mt(tmp_path_factory) -> hl.MatrixTable:
+    """
+    a fixture to make a matrix table
+    """
+    tmp_path = tmp_path_factory.mktemp('bch_dn_mt_goes_here')
+    sample_gt = Entry('0/1', ad=[12])
+    parent_gt = Entry('0/0', ad=[30], gq=40)
+    sample_data = {'male': sample_gt, 'mother_1': parent_gt, 'father_1': parent_gt}
+    sample_schema = {
+        'male': sample_gt.get_schema_entry(),
+        'mother_1': parent_gt.get_schema_entry(),
+        'father_1': parent_gt.get_schema_entry(),
+    }
     v = VepVariant(
         BaseFields('chr1:12345', alleles=['A', 'G']),
         [TXFields('a', 'ensga')],
