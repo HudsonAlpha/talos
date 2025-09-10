@@ -1,24 +1,12 @@
 work/
+runs/inputs/*
+runs/outputs/*
 clinvarbitration_data/
 large_files/
 *.log
 .nextflow.log.*
 .nextflow/
-nextflow/dnascope2_outputs/
-nextflow/test_1/
-nextflow/test_1_outputs/
-nextflow/test_2/
-nextflow/test_3_input/
 echtvar_config.json
-nextflow/illumina_inputs/
-nextflow/illumina_outputs/
-nextflow/merged2_outputs/
-nextflow/merged3_outputs/
-nextflow/merged_input/
-nextflow/merged_outputs/
-nextflow/smalltest2_outputs/
-nextflow/smalltest_outputs/
-nextflow/testsmall_outputs/
 # Python codebase default gitignore (github template)
 
 # hail logs
