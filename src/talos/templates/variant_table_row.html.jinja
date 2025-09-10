@@ -96,13 +96,24 @@
     </td>
     <td>
         {# CSQ #}
-        {% if variant.mane_csq %}
-            {{variant.mane_csq}}
-            <br>
-            {{ variant.mane_hgvsps }}
-        {% elif variant.var_type == 'SmallVariant' %}
-            <span class="badge text-bg-warning">Non-canonical transcript only</span>
-        {% endif %}
+                {% if variant.mane_csq %}
+                    {{ variant.mane_csq }}
+                    <br>
+                    {% if variant.mane_hgvsps|length > 40 %}
+                        <span class="mane-hgvsps-toggle" style="cursor:pointer; color:#007bff; text-decoration:underline;" onclick="
+                            var el = this.nextElementSibling;
+                            el.style.display = (el.style.display === 'none') ? 'inline' : 'none';
+                            this.innerText = (el.style.display === 'none') ? '{{ variant.mane_hgvsps[:40] ~ '...' }}' : 'Hide';
+                        ">
+                            {{ variant.mane_hgvsps[:40] ~ '...' }}
+                        </span>
+                        <span style="display:none;" class="mane-hgvsps-full">{{ variant.mane_hgvsps }}</span>
+                    {% else %}
+                        {{ variant.mane_hgvsps }}
+                    {% endif %}
+                {% elif variant.var_type == 'SmallVariant' %}
+                    <span class="badge text-bg-warning">Non-canonical transcript only</span>
+                {% endif %}
     </td>
     <td>
         {# Clinvar #}
