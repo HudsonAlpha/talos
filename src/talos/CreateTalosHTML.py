@@ -25,8 +25,8 @@ from loguru import logger
 from talos.config import config_retrieve
 from talos.models import PanelApp, PanelDetail, ReportVariant, ResultData, SmallVariant, StructuralVariant
 from talos.utils import read_json_from_path
-import models
 # for testing only
+#import models
 # from models import ReportVariant, ResultData, SmallVariant, StructuralVariant
 # logger.info(f'models from {models.__file__}')
 # logger.info(f'ReportVariant from {ReportVariant.__module__}')
