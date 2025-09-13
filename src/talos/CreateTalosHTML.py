@@ -27,9 +27,9 @@ from talos.models import PanelApp, PanelDetail, ReportVariant, ResultData, Small
 from talos.utils import read_json_from_path
 import models
 # for testing only
-from models import ReportVariant, ResultData, SmallVariant, StructuralVariant
-logger.info(f'models from {models.__file__}')
-logger.info(f'ReportVariant from {ReportVariant.__module__}')
+# from models import ReportVariant, ResultData, SmallVariant, StructuralVariant
+# logger.info(f'models from {models.__file__}')
+# logger.info(f'ReportVariant from {ReportVariant.__module__}')
 # end for testing only
 
 JINJA_TEMPLATE_DIR = Path(__file__).absolute().parent / 'templates'
