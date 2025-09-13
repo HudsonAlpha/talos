@@ -46,10 +46,10 @@ def parse_csq(var_data):
         return mane_consequences, mane_hgvsps
 
 def robokevin_check_result(library, chrom, pos, ref, alt):
-    url=f"https://murphy.haib.org/api/v1/result-check/{library}/{chrom}/{pos}/{ref}/{alt}"
+    url=f"https://murphy.haib.org/api/v1/result-check/library/{library}/{chrom}/{pos}/{ref}/{alt}"
     response = requests.get(url, verify=False)
     if response.status_code == 200:
-        result = json.loads(response.json())['is_returned']
+        result = response.json()['is_returned']
         return result
     else:
         return None
@@ -69,7 +69,7 @@ def map_talos_result(result_dict):
                 'first_tagged': variant['first_tagged'],
                 'flags': ",".join(variant['flags']),
                 'disease_model': variant['reasons'],
-                'is_returned': robokevin_check_result(variant['sample'], variant['var_data']['coordinates']['chrom'], variant['var_data']['coordinates']['pos'], variant['var_data']['coordinates']['ref'], variant['var_data']['coordinates']['alt']),
+                'is_returned': robokevin_check_result(variant['sample'], 'chr'+variant['var_data']['coordinates']['chrom'], variant['var_data']['coordinates']['pos'], variant['var_data']['coordinates']['ref'], variant['var_data']['coordinates']['alt']),
                 'clinvar_stars': variant['clinvar_stars'],
                 'clinvar_increase': variant['clinvar_increase'],
                 'found_in_current_run': variant['found_in_current_run'],
