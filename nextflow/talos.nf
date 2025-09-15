@@ -86,9 +86,15 @@ workflow {
         ch_runtime_config,
     )
 
+    // Layer on hudsonalpha info from robokevin
+    AddRKReturns(
+        HPOFlagging.out,
+        ch_runtime_config,
+    )
+
     // Generate HTML report - only suited to single-report runs
     CreateTalosHTML(
-        HPOFlagging.out,
+        AddRKReturns.out,
         UnifiedPanelAppParser.out,
         ch_runtime_config,
         ch_opt_ids,
