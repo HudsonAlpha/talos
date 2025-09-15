@@ -85,15 +85,15 @@ def map_talos_result(result_dict):
 
 
 
+def cli_main():
+    with open(args.input) as input_data:
+        talos_data = json.load(input_data)
+        
 
-with open(args.input) as input_data:
-    talos_data = json.load(input_data)
-    
+    with open(args.output, "w") as output_handle:
+        mapped_data, headers = map_talos_result(talos_data)
+        writer = csv.DictWriter(output_handle, fieldnames=headers, dialect=csv.excel_tab)
+        writer.writeheader()
+        writer.writerows(mapped_data) 
 
-with open(args.output, "w") as output_handle:
-    mapped_data, headers = map_talos_result(talos_data)
-    writer = csv.DictWriter(output_handle, fieldnames=headers, dialect=csv.excel_tab)
-    writer.writeheader()
-    writer.writerows(mapped_data) 
-
-    
+        
