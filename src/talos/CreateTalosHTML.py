@@ -25,15 +25,9 @@ from loguru import logger
 from talos.config import config_retrieve
 from talos.models import PanelApp, PanelDetail, ReportVariant, ResultData, SmallVariant, StructuralVariant
 from talos.utils import read_json_from_path
-# for testing only
-#import models
-# from models import ReportVariant, ResultData, SmallVariant, StructuralVariant
-# logger.info(f'models from {models.__file__}')
-# logger.info(f'ReportVariant from {ReportVariant.__module__}')
-# end for testing only
+
 
 JINJA_TEMPLATE_DIR = Path(__file__).absolute().parent / 'templates'
-logger.info(f'Using Jinja2 templates from {JINJA_TEMPLATE_DIR}')
 MIN_REPORT_SIZE: int = 10
 MAX_REPORT_SIZE: int = 200
 

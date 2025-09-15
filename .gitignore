@@ -7,6 +7,7 @@ large_files/
 .nextflow.log.*
 .nextflow/
 echtvar_config.json
+data/
 # Python codebase default gitignore (github template)
 
 # hail logs
