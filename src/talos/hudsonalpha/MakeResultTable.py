@@ -56,6 +56,8 @@ def map_talos_result(result_dict):
         for variant in result_dict['results'][library]['variants']:
             row = {
                 'library': variant['sample'],
+                'proband_genotype': variant['genotypes'].get(variant['sample']),
+                'all_genotypes': str(variant['genotypes']),
                 'family': variant['family'],
                 'gcooper_returned': variant['gcooper_returned'],
                 'gcooper_acmg_score': variant['gcooper_acmg_score'],
@@ -67,6 +69,9 @@ def map_talos_result(result_dict):
                 'gene': parse_csq(variant['var_data'])[2],
                 'ensg': variant['gene'],
                 # phenotype match
+                'hpo_gene_matches': ",".join(variant['phenotype_labels']),
+                'cohort_forced_panel_matches': ",".join([f'{v} ({k})' for k,v in variant['panels']['forced'].items()]),
+                'phenotype_panel_matches': ",".join([f'{v} ({k})' for k,v in variant['panels']['matched'].items()]),
                 'support_categories': ",".join(variant['categories'].keys()),
                 'gnomad_ac': variant['var_data']['info'].get('gnomad_ac'),
                 'gnomad_af': variant['var_data']['info'].get('gnomad_af'),
@@ -81,7 +86,14 @@ def map_talos_result(result_dict):
                 'support_variants': ",".join(variant['support_vars']),
                 'found_in_current_run': variant['found_in_current_run'],
                 'evidence_last_updated': variant['evidence_last_updated'],
+                'cohort_ac': variant['var_data']['info']['ac'],
+                'cohort_an': variant['var_data']['info']['an'],
+                'cohort_af': variant['var_data']['info']['af'],
+                'cohort_ac_hom': variant['var_data']['info']['ac_hom'],
+                'cohort_ac_het': variant['var_data']['info']['ac_het'],
+                'cohort_ac_hemi': variant['var_data']['info']['ac_hemi'],
                 
+
             }
             mapped_data.append(row)
 
