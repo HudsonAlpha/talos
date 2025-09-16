@@ -19,10 +19,14 @@ def parse_csq(var_data):
         """
         mane_consequences = set()
         mane_hgvsps = set()
+        genes = set()
 
         for csq in var_data['transcript_consequences']:
             if 'consequence' not in csq:
                 continue
+
+            if csq['gene']:
+                genes.add(csq['gene'])
 
             if csq['mane_id']:
                 mane_consequences.update(csq['consequence'].split('&'))
@@ -42,17 +46,9 @@ def parse_csq(var_data):
         # simplify the consequence strings
         mane_consequences = ', '.join(_csq.replace('_variant', '').replace('_', ' ') for _csq in mane_consequences)
         mane_hgvsps = ', '.join(mane_hgvsps)
+        genes = ', '.join(genes)
 
-        return mane_consequences, mane_hgvsps
-
-def robokevin_check_result(library, chrom, pos, ref, alt):
-    url=f"https://murphy.haib.org/api/v1/result-check/library/{library}/{chrom}/{pos}/{ref}/{alt}"
-    response = requests.get(url, verify=False)
-    if response.status_code == 200:
-        result = response.json()['is_returned']
-        return result
-    else:
-        return None
+        return mane_consequences, mane_hgvsps, genes
     
 def map_talos_result(result_dict):
     mapped_data = []
@@ -60,23 +56,32 @@ def map_talos_result(result_dict):
         for variant in result_dict['results'][library]['variants']:
             row = {
                 'library': variant['sample'],
+                'family': variant['family'],
+                'gcooper_returned': variant['gcooper_returned'],
+                'gcooper_acmg_score': variant['gcooper_acmg_score'],
                 'chrom': variant['var_data']['coordinates']['chrom'],
                 'pos': variant['var_data']['coordinates']['pos'],
                 'ref': variant['var_data']['coordinates']['ref'],
                 'alt': variant['var_data']['coordinates']['alt'],
+                'moi': variant['reasons'],
+                'gene': parse_csq(variant['var_data'])[2],
                 'ensg': variant['gene'],
-                'support_categories': ",".join(variant['var_data']['support_categories']),
+                # phenotype match
+                'support_categories': ",".join(variant['categories'].keys()),
+                'gnomad_ac': variant['var_data']['info'].get('gnomad_ac'),
+                'gnomad_af': variant['var_data']['info'].get('gnomad_af'),
                 'first_tagged': variant['first_tagged'],
-                'flags': ",".join(variant['flags']),
-                'disease_model': variant['reasons'],
-                'is_returned': robokevin_check_result(variant['sample'], 'chr'+variant['var_data']['coordinates']['chrom'], variant['var_data']['coordinates']['pos'], variant['var_data']['coordinates']['ref'], variant['var_data']['coordinates']['alt']),
-                'clinvar_stars': variant['clinvar_stars'],
-                'clinvar_increase': variant['clinvar_increase'],
-                'found_in_current_run': variant['found_in_current_run'],
-                'family': variant['family'],
-                'evidence_last_updated': variant['evidence_last_updated'],
                 'mane_consequences': parse_csq(variant['var_data'])[0],
                 'mane_hgvsps': parse_csq(variant['var_data'])[1],
+                'clinvarbitration_significance': variant['var_data']['info']['clinvar_significance'],
+                'clinvarbitration_stars': variant['clinvar_stars'],
+                'clinvar_increase': variant['clinvar_increase'],
+                'pm5': ",".join(variant['var_data']['info'].get('pm5_data', {}).keys()),
+                'flags': ",".join(variant['flags']),
+                'support_variants': ",".join(variant['support_vars']),
+                'found_in_current_run': variant['found_in_current_run'],
+                'evidence_last_updated': variant['evidence_last_updated'],
+                
             }
             mapped_data.append(row)
 
@@ -96,4 +101,5 @@ def cli_main():
         writer.writeheader()
         writer.writerows(mapped_data) 
 
-        
+if __name__ == "__main__":
+	cli_main()        
