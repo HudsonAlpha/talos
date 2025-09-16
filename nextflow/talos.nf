@@ -11,6 +11,7 @@ include { ValidateMOI } from './modules/talos/ValidateMOI/main'
 include { HPOFlagging } from './modules/talos/HPOFlagging/main'
 include { CreateTalosHTML } from './modules/talos/CreateTalosHTML/main'
 include { StartupChecks } from './modules/talos/StartupChecks/main'
+include { AddRKReturns } from './modules/talos/AddRKReturns/main'
 
 workflow {
     // existence of these files is necessary for starting the workflow
@@ -89,7 +90,6 @@ workflow {
     // Layer on hudsonalpha info from robokevin
     AddRKReturns(
         HPOFlagging.out,
-        ch_runtime_config,
     )
 
     // Generate HTML report - only suited to single-report runs
