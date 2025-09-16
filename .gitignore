@@ -8,6 +8,7 @@ large_files/
 .nextflow/
 echtvar_config.json
 data/
+slurm*.out
 # Python codebase default gitignore (github template)
 
 # hail logs
