@@ -3,7 +3,7 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 argparser = argparse.ArgumentParser(description="Make a result table from a JSON file")
-argparser.add_argument("--input", help="Path to the talos results json file")
+argparser.add_argument("--input", help="Path to the talos results (annotated with gcooper returns) json file")
 argparser.add_argument("--output", help="Path to the output CSV file")
 
 args = argparser.parse_args()

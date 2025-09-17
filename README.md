@@ -1,10 +1,10 @@
 # Notes
 This is forked off of the upstream repository [populationgenomics/talos](https://github.com/populationgenomics/talos) so that we can make implementation tweaks such as adding more cluster resources to certain nextflow steps. 
-Currently forked at upstream commit 289e51f Add de_novo config block [CPG only] (#575) noted as v7.5.2
+Currently forked at upstream commit 289e51f Add de_novo config block [CPG only] (#575) noted as v8.0.2
 Deployed on the cluster for running nextflow pipeline at `/cluster/home/jlawlor/talos` 
 with configuration & annotated data stored at `/cluster/lab/gcooper/hg38/talos/` and in repository [HudsonAlpha/talos-deploy](https://github.com/HudsonAlpha/talos-deploy) (private). 
 
-Changes to nextflow code here will take effect. Changes to python code (e.g. filtering & annotation logic) will need to be re-built into the singularity image `/cluster/lab/gcooper/hg38/talos/images/talos-build_7.5.2.sif`,
+Changes to nextflow code here will take effect. Changes to python code (e.g. filtering & annotation logic) will need to be re-built into the singularity image `docker://harbor.apps.haib.org/gcooperlab/talos:8.0.2.2`,
 which is then specified in the config files in the talos-deploy repository. 
 
 Specific instructions to run in in repository [HudsonAlpha/talos-deploy](https://github.com/HudsonAlpha/talos-deploy). Note: config files in this repo are the templates from upstream
@@ -76,7 +76,7 @@ Talos is implemented using **Nextflow**, with all dependencies containerised via
 To build the Docker image:
 
 ```
-docker build -t talos:8.0.2 .
+docker build -t talos:8.0.2.2 .
 ```
 
 ### **2. Download Annotation Resources**

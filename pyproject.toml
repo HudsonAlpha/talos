@@ -112,6 +112,7 @@ SummariseReport = 'talos.SummariseReport:cli_main'
 AddRKReturns = 'talos.hudsonalpha.AddRKReturns:cli_main'
 MakeResultTable = 'talos.hudsonalpha.MakeResultTable:cli_main'
 PluckReturnedResults = 'talos.hudsonalpha.PluckReturnedResults:cli_main'
+MakeFakeCodiVCF = 'talos.hudsonalpha.MakeFakeCodiVCF:cli_main'
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/talos"]
@@ -176,7 +177,7 @@ hail = ["hail"]
 "src/talos/cpg_internal_scripts/talos_stages.py" = ["ARG002"]
 
 [tool.bumpversion]
-current_version = "8.0.2"
+current_version = "8.0.2.2"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 commit = true
