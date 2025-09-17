@@ -84,11 +84,16 @@
                             <dt class="col-sm-3">Genotypes</dt>
                             <dd class="col-sm-9">
                             {% for sample_id, gt in variant.genotypes.items() %}
-                                {{macros.ped_symbol(
-                                    sample.family_members[sample_id].sex.value,
-                                    sample.family_members[sample_id].affected
-                                  )}}
-                                {{sample.family_display[sample_id]}} - {{gt}} <br>
+                                    {% set member = sample.family_members.get(sample_id) %}
+                                    {% if member %}
+                                        {{macros.ped_symbol(
+                                            member.sex.value,
+                                            member.affected
+                                        )}}
+                                    {% else %}
+                                        <span class="text-danger">Unknown member</span>
+                                    {% endif %}
+                                    {{sample.family_display.get(sample_id, sample_id)}} - {{gt}} <br>
                             {% endfor %}
                             </dd>
 

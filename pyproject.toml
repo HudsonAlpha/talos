@@ -106,6 +106,14 @@ CreateTalosHTML = 'talos.CreateTalosHTML:cli_main'
 # Generate a brief summary of an existing report (variant count, family size, etc.)
 SummariseReport = 'talos.SummariseReport:cli_main'
 
+# ----------------------------------------------------------------------------------------
+# these scripts are custom HudsonAlpha scripts
+# ----------------------------------------------------------------------------------------
+AddRKReturns = 'talos.hudsonalpha.AddRKReturns:cli_main'
+MakeResultTable = 'talos.hudsonalpha.MakeResultTable:cli_main'
+PluckReturnedResults = 'talos.hudsonalpha.PluckReturnedResults:cli_main'
+MakeFakeCodiVCF = 'talos.hudsonalpha.MakeFakeCodiVCF:cli_main'
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/talos"]
 

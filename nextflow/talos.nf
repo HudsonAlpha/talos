@@ -11,6 +11,10 @@ include { ValidateMOI } from './modules/talos/ValidateMOI/main'
 include { HPOFlagging } from './modules/talos/HPOFlagging/main'
 include { CreateTalosHTML } from './modules/talos/CreateTalosHTML/main'
 include { StartupChecks } from './modules/talos/StartupChecks/main'
+// HudsonAlpha Custom modules
+include { AddRKReturns } from './modules/talos/AddRKReturns/main'
+include { MakeFakeCodiVCF } from './modules/talos/MakeFakeCodiVCF/main'
+include { MakeResultTable } from './modules/talos/MakeResultTable/main'
 
 workflow {
     // existence of these files is necessary for starting the workflow
@@ -86,9 +90,24 @@ workflow {
         ch_runtime_config,
     )
 
+    // Layer on hudsonalpha info from robokevin
+    AddRKReturns(
+        HPOFlagging.out,
+    )
+
+    // Create a fake VCF for codi
+    MakeFakeCodiVCF(
+        AddRKReturns.out,
+    )
+
+// Create a TSV version of the robokevin-annotated results
+    MakeResultTable(
+        AddRKReturns.out,
+    )
+
     // Generate HTML report - only suited to single-report runs
     CreateTalosHTML(
-        HPOFlagging.out,
+        AddRKReturns.out,
         UnifiedPanelAppParser.out,
         ch_runtime_config,
         ch_opt_ids,

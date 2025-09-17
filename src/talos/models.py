@@ -364,6 +364,10 @@ class ReportVariant(BaseModel):
     exomiser_results: list[str] = Field(default_factory=list)
     found_in_current_run: bool = Field(default=True)
 
+    # layer on GCooper return status
+    gcooper_returned: bool | None = Field(default=None)
+    gcooper_acmg_score: str | None = Field(default=None)
+
     def __eq__(self, other):
         """
         makes reported variants comparable

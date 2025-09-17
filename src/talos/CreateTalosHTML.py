@@ -26,6 +26,7 @@ from talos.config import config_retrieve
 from talos.models import PanelApp, PanelDetail, ReportVariant, ResultData, SmallVariant, StructuralVariant
 from talos.utils import read_json_from_path
 
+
 JINJA_TEMPLATE_DIR = Path(__file__).absolute().parent / 'templates'
 MIN_REPORT_SIZE: int = 10
 MAX_REPORT_SIZE: int = 200
@@ -581,6 +582,10 @@ class Variant:
         raise ValueError(f'Unknown variant type: {self.var_data.__class__.__name__}')
 
     def __init__(self, report_variant: ReportVariant, sample: Sample, ext_labels: list, html_builder: HTMLBuilder):
+        # layer on gcooper data if it exits
+        self.gcooper_returned = report_variant.gcooper_returned
+        self.gcooper_acmg_score = report_variant.gcooper_acmg_score
+        # as written
         self.var_data = report_variant.var_data
         self.var_type = report_variant.var_data.__class__.__name__
         self.chrom = report_variant.var_data.coordinates.chrom
