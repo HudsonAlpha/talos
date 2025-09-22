@@ -5,7 +5,7 @@ Currently forked at upstream commit bf62438374294b074ea3913e33b124f5dbe13e18 Squ
 Deployed on the cluster for running nextflow pipeline at `/cluster/home/jlawlor/talos` 
 with configuration & annotated data stored at `/cluster/lab/gcooper/hg38/talos/` and in repository [HudsonAlpha/talos-deploy](https://github.com/HudsonAlpha/talos-deploy) (private). 
 
-Changes to nextflow code here will take effect. Changes to python code (e.g. filtering & annotation logic) will need to be re-built into the singularity image `docker://harbor.apps.haib.org/gcooperlab/talos:8.0.3.1`,
+Changes to nextflow code here will take effect. Changes to python code (e.g. filtering & annotation logic) will need to be re-built into the singularity image `docker://harbor.apps.haib.org/gcooperlab/talos:8.0.3.2`,
 which is then specified in the config files in the talos-deploy repository. 
 
 Specific instructions to run in in repository [HudsonAlpha/talos-deploy](https://github.com/HudsonAlpha/talos-deploy). Note: config files in this repo are the templates from upstream
@@ -83,7 +83,7 @@ Talos is implemented using **Nextflow**, with all dependencies containerised via
 To build the Docker image:
 
 ```
-docker build -t talos:8.0.3.1 .
+docker build -t talos:8.0.3.2 .
 ```
 
 ### **2. Download Annotation Resources**

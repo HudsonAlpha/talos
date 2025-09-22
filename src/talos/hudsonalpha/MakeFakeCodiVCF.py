@@ -33,7 +33,7 @@ def map_talos_result(result_dict):
                 'gt': '0/1:10,10',
             }
             processed_variant_count += 1
-            if row['gcooper_returned'] and (row['gcooper_acmg_score'] == 'pathogenic' or row['gcooper_acmg_score'] == 'likely pathogenic'):
+            if row['gcooper_returned'] and (row['gcooper_acmg_score'] == 'pathogenic' or row['gcooper_acmg_score'] == 'likely-pathogenic'):
                 skipped_variant_count += 1
                 continue
             mapped_data.add("\t".join([str(row[col]) for col in ['chrom', 'pos', 'id', 'ref', 'alt', 'qual', 'filter', 'info', 'format', 'gt']]) + "\n")
